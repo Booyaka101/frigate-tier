@@ -9,7 +9,13 @@ permissions:
   contents: read
 
 jobs:
+  # Off until PyPI trusted publishing is configured for this repo. Add the
+  # publisher on pypi.org (project frigate-tier, workflow release.yml,
+  # environment pypi), then set the repository variable
+  # PYPI_TRUSTED_PUBLISHING to true. Until then releases are cut with
+  # `twine upload dist/*` from a machine holding the token.
   pypi:
+    if: vars.PYPI_TRUSTED_PUBLISHING == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

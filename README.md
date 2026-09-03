@@ -16,7 +16,7 @@ pretty complex."
 frigate-tier is that job done properly: one command, per-segment verification, a transaction per
 file, and refusals for the layouts that quietly destroy footage.
 
-![frigate-tier plan](docs/screenshots/plan.png)
+![frigate-tier plan](https://raw.githubusercontent.com/Booyaka101/frigate-tier/main/docs/screenshots/plan.png)
 
 ## Why moving a segment works at all
 
@@ -74,7 +74,7 @@ dry run - nothing moved
 
 Add `--commit` to do it, then check the result:
 
-![frigate-tier move, verify and sync-report](docs/screenshots/move-verify.png)
+![frigate-tier move, verify and sync-report](https://raw.githubusercontent.com/Booyaka101/frigate-tier/main/docs/screenshots/move-verify.png)
 
 `verify` exits non-zero on any mismatch, so it works as a cron health check. `sync-report` is the
 one to run before you touch Frigate's Maintenance pane; see the hazard section below.
@@ -147,7 +147,7 @@ You do not have to take that on trust. `sync-report` runs the same comparison Fr
 read only, and tells you exactly what the button would delete. A healthy tiered setup reports
 nothing on both sides. Point it at the wrong paths and it shows you the damage you avoided:
 
-![frigate-tier sync-report with the mapping missing](docs/screenshots/sync-report.png)
+![frigate-tier sync-report with the mapping missing](https://raw.githubusercontent.com/Booyaka101/frigate-tier/main/docs/screenshots/sync-report.png)
 
 ```bash
 frigate-tier sync-report --db /config/frigate.db \
@@ -160,7 +160,7 @@ It exits non-zero if anything would be deleted, so it belongs in the same cron e
 
 And this is what the refusals look like when you get the layout wrong:
 
-![frigate-tier refusing two bad layouts](docs/screenshots/refusals.png)
+![frigate-tier refusing two bad layouts](https://raw.githubusercontent.com/Booyaka101/frigate-tier/main/docs/screenshots/refusals.png)
 
 ## Commands
 
