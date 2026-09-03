@@ -400,16 +400,6 @@ frigate-tier plan --db /tmp/frigate-demo/config/frigate.db \
     --older-than 3d
 ```
 
-## Where to tell people about it
-
-One place, first: a comment on
-[frigate#3673](https://github.com/blakeblackshear/frigate/issues/3673). It is the open request this
-tool answers, it has been collecting subscribers since 2022, and the people in it have already said
-what they need. A short comment saying what the tool does, that it refuses the two layouts media
-sync will eat, and linking here will reach them without a separate announcement. The mergerfs
-write-up in [discussion #18343](https://github.com/blakeblackshear/frigate/discussions/18343) is the
-obvious second stop, since everyone there is already running a hand-rolled version of this.
-
 ## License
 
 MIT.
