@@ -94,7 +94,24 @@ Publishing only. `.github/workflows/release.yml` fires on a `v*` tag:
    the trusted publisher, and a `pypi` GitHub environment.
 2. GHCR via `GITHUB_TOKEN`, multi-arch amd64 + arm64.
 
-Then the distribution step in the README: a comment on frigate#3673.
+## Distribution
+
+Discovery is passive by choice: the PyPI name, the GHCR image, and the README's opening
+paragraph. Announced once on r/frigate_nvr, which has no rules and takes tool posts well
+(a comment there is at
+https://www.reddit.com/r/frigate_nvr/comments/1w5y9wc/made_a_tool_for_the_move_old_frigate_recordings/).
+
+Deliberately NOT frigate#3673, though it is the open request this answers. It is pinned and
+marked planned, NickM-27 has twice asked people to stop advocating in it (the second time six
+weeks ago, and nobody has posted since), and its author moderates it and is openly wary of AI
+contributions. A third-party tool posted there reads as ignoring the maintainers or capturing
+their audience. The README used to name it as the first distribution step; that was wrong and
+the section is gone.
+
+The remaining channel worth using is a PR to Frigate's docs
+(docs/docs/integrations/third_party_extensions.md), which states outright that it can be
+extended by PR, and whose last eight community entries were four-line additions by each tool's
+own author. Note Frigate's AI policy: a person has to read and send the PR.
 
 ## Next steps, if there is a v1.2
 
