@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "frigate-tier"
+version = "1.0.0"
+description = "Move old Frigate NVR recording segments onto slower storage and keep them playable inside Frigate."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Christo Bosch", email = "cbosch101@gmail.com" }]
+keywords = ["frigate", "nvr", "storage", "tiering", "archive", "nas", "sqlite"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Archiving",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "peewee>=3.17",
+    "click>=8.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Booyaka101/frigate-tier"
+Repository = "https://github.com/Booyaka101/frigate-tier"
+Issues = "https://github.com/Booyaka101/frigate-tier/issues"
+Changelog = "https://github.com/Booyaka101/frigate-tier/blob/main/CHANGELOG.md"
+
+[project.scripts]
+frigate-tier = "frigate_tier.__main__:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["frigate_tier"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/frigate_tier",
+    "/tests",
+    "/Dockerfile",
+    "/docker-entrypoint.sh",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4"]
