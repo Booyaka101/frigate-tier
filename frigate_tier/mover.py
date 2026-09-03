@@ -8,6 +8,7 @@ has committed, and a resumed run simply picks up the rows that are still hot.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shutil
@@ -259,7 +260,7 @@ def _relocate_one(
             digest = _copy_and_digest(source, part, limiter)
             landed = _digest(part)
             if landed != digest:
-                part.unlink(missing_ok=True)
+                _discard(part)
                 return SegmentResult(
                     candidate,
                     STATUS_VERIFY_FAILED,
@@ -295,7 +296,7 @@ def _relocate_one(
                 )
         except IntegrityError as exc:
             if copied_here:
-                destination.unlink(missing_ok=True)
+                _discard(destination)
             return SegmentResult(
                 candidate,
                 STATUS_COLLISION,
@@ -304,12 +305,12 @@ def _relocate_one(
             )
         except OperationalError as exc:
             if copied_here:
-                destination.unlink(missing_ok=True)
+                _discard(destination)
             raise _busy(exc) from exc
 
         if updated != 1:
             if copied_here:
-                destination.unlink(missing_ok=True)
+                _discard(destination)
             return SegmentResult(
                 candidate,
                 STATUS_ERROR,
@@ -329,9 +330,9 @@ def _relocate_one(
     except OSError as exc:
         # A full disk, an unreadable file or a dropped mount should cost one
         # segment, not the rest of the run.
-        part.unlink(missing_ok=True)
+        _discard(part)
         if copied_here:
-            destination.unlink(missing_ok=True)
+            _discard(destination)
         return SegmentResult(
             candidate,
             STATUS_ERROR,
@@ -339,13 +340,23 @@ def _relocate_one(
             detail=f"{exc}; source left in place",
         )
     except BaseException:
-        part.unlink(missing_ok=True)
+        _discard(part)
         if copied_here:
-            destination.unlink(missing_ok=True)
+            _discard(destination)
         raise
     finally:
-        if part.exists():
-            part.unlink(missing_ok=True)
+        _discard(part)
+
+
+def _discard(path: Path) -> None:
+    """Remove a file this run created, tolerating a path that was never valid.
+
+    ``missing_ok`` only swallows FileNotFoundError. When the copy failed because
+    a parent is a regular file, unlink raises ENOTDIR, and a cleanup handler that
+    dies on the error it is cleaning up after takes the whole run down with it.
+    """
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
 
 
 class RateLimiter:

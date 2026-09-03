@@ -9,6 +9,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # report every combination, so one failure does not hide the others
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
         peewee: ["peewee==3.17.*", "peewee"]
