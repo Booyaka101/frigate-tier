@@ -8,7 +8,6 @@ a move, so a pass here means Frigate's own playback path resolves.
 
 from __future__ import annotations
 
-import json
 import shutil
 import sqlite3
 import subprocess
@@ -16,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from conftest import paths_under
+from mediacheck import duration
 
 from frigate_tier.__main__ import cli
 
@@ -33,24 +33,6 @@ def _playlist(db_path: Path, camera: str, target: Path) -> int:
             # test run needs forward slashes to reach the same file.
             handle.write(f"file '{Path(path).as_posix()}'\n")
     return len(clips)
-
-
-def _duration(path: Path) -> float:
-    out = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "json",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    return float(json.loads(out.stdout)["format"]["duration"])
 
 
 @pytest.fixture
@@ -134,4 +116,4 @@ def test_a_camera_still_concatenates_after_a_move(
     )
 
     assert after.exists()
-    assert _duration(after) == pytest.approx(_duration(before), abs=0.05)
+    assert duration(after) == pytest.approx(duration(before), abs=0.05)

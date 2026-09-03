@@ -28,6 +28,33 @@ SEGMENTS_PER_DAY = 10
 SEGMENT_SECONDS = 10
 
 
+@dataclass(frozen=True)
+class Profile:
+    """How big and how long each rendered segment is."""
+
+    width: int = 640
+    height: int = 480
+    rate: int = 15
+    seconds: float = 2.0
+
+
+SMALL = Profile()
+# What a camera actually writes: ten seconds of 720p per segment, a few MB each.
+REALISTIC = Profile(width=1280, height=720, rate=15, seconds=float(SEGMENT_SECONDS))
+
+PROFILES = {"small": SMALL, "realistic": REALISTIC}
+
+
+@dataclass(frozen=True)
+class Clip:
+    """One file to render. The hue and marker make every segment unique, so a
+    mixed-up or duplicated file shows up as a changed sha256."""
+
+    target: Path
+    profile: Profile
+    index: int
+
+
 @dataclass
 class Fixture:
     root: Path
@@ -49,8 +76,11 @@ def _rand_id(start_time: float) -> str:
     return f"{start_time}-{suffix}"
 
 
-def _render(ffmpeg: str, target: Path, duration: float, rate: int) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
+def _render(ffmpeg: str, clip: Clip) -> None:
+    profile = clip.profile
+    hue = (clip.index * 37) % 360
+    marker = (clip.index * 17) % max(1, profile.width - 60)
+    clip.target.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
             ffmpeg,
@@ -60,15 +90,20 @@ def _render(ffmpeg: str, target: Path, duration: float, rate: int) -> None:
             "-f",
             "lavfi",
             "-i",
-            f"testsrc=size=640x480:rate={rate}:duration={duration}",
+            f"testsrc2=size={profile.width}x{profile.height}"
+            f":rate={profile.rate}:duration={profile.seconds}",
+            "-vf",
+            f"hue=h={hue},drawbox=x={marker}:y=0:w=60:h=60:color=white:t=fill",
             "-c:v",
             "libx264",
+            "-preset",
+            "veryfast",
             "-pix_fmt",
             "yuv420p",
             "-movflags",
             "+faststart",
             "-y",
-            str(target),
+            str(clip.target),
         ],
         check=True,
         capture_output=True,
@@ -85,6 +120,7 @@ def build(
     cameras: tuple[str, ...] = CAMERAS,
     day_offsets: tuple[int, ...] = DAY_OFFSETS,
     per_day: int = SEGMENTS_PER_DAY,
+    profile: Profile = SMALL,
     ffmpeg: str = "ffmpeg",
     workers: int = 8,
 ) -> Fixture:
@@ -109,7 +145,7 @@ def build(
     fixture.preview_cold.mkdir(parents=True, exist_ok=True)
 
     now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)
-    jobs: list[tuple[Path, float, int]] = []
+    jobs: list[Clip] = []
 
     for offset in day_offsets:
         base = now - dt.timedelta(days=offset)
@@ -126,9 +162,7 @@ def build(
                     / camera
                     / f"{start.strftime('%M.%S')}.mp4"
                 )
-                duration = 2.0 + (index % 3)
-                rate = 15 + (index % 2) * 5
-                jobs.append((target, duration, rate))
+                jobs.append(Clip(target, profile, len(jobs)))
                 fixture.recordings.append(
                     {
                         "camera": camera,
@@ -150,7 +184,7 @@ def build(
                 / camera
                 / f"{preview_start.timestamp()}-{preview_end.timestamp()}.mp4"
             )
-            jobs.append((preview, 2.0, 15))
+            jobs.append(Clip(preview, profile, len(jobs)))
             fixture.previews.append(
                 {
                     "camera": camera,
@@ -162,7 +196,7 @@ def build(
             )
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(lambda job: _render(binary, *job), jobs))
+        list(pool.map(lambda clip: _render(binary, clip), jobs))
 
     for record in fixture.recordings:
         record["bytes"] = record["path"].stat().st_size
@@ -213,13 +247,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("root", type=Path, help="directory to build the tree in")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILES),
+        default="small",
+        help="small is 640x480 for tests, realistic is 10s of 720p per segment",
+    )
+    parser.add_argument("--cameras", nargs="+", default=list(CAMERAS))
+    parser.add_argument(
+        "--day-offsets",
+        nargs="+",
+        type=int,
+        default=list(DAY_OFFSETS),
+        help="days ago to write, 0 meaning an hour ago",
+    )
+    parser.add_argument("--per-day", type=int, default=SEGMENTS_PER_DAY)
+    parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args(argv)
 
     if args.root.exists() and any(args.root.iterdir()):
         parser.error(f"{args.root} is not empty")
 
     try:
-        fixture = build(args.root, ffmpeg=args.ffmpeg)
+        fixture = build(
+            args.root,
+            cameras=tuple(args.cameras),
+            day_offsets=tuple(args.day_offsets),
+            per_day=args.per_day,
+            profile=PROFILES[args.profile],
+            ffmpeg=args.ffmpeg,
+            workers=args.workers,
+        )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

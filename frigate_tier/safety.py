@@ -15,11 +15,24 @@ enough to make a small mistake survivable and a large one permanent.
 
 from __future__ import annotations
 
+import shutil
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
+
+
+def indent(text: str, prefix: str = "  ") -> str:
+    """Wrap an explanation to the terminal so a refusal reads as a paragraph."""
+    width = min(max(shutil.get_terminal_size(fallback=(100, 24)).columns, 60), 100)
+    return textwrap.fill(
+        " ".join(text.split()),
+        width=width - 1,
+        initial_indent=prefix,
+        subsequent_indent=prefix,
+    )
 
 
 class SafetyRefusal(Exception):
@@ -30,12 +43,18 @@ class SafetyRefusal(Exception):
 class Finding:
     severity: str
     code: str
-    message: str
+    summary: str
+    detail: str = ""
     overridable: bool = False
 
-    def render(self) -> str:
-        label = "REFUSING" if self.severity == SEVERITY_ERROR else "warning"
-        return f"{label}: {self.message}"
+    @property
+    def message(self) -> str:
+        return f"{self.summary} {self.detail}".strip()
+
+    def render(self, refuse: bool = True) -> str:
+        label = "REFUSING" if refuse else "warning"
+        head = f"{label}: {self.summary}"
+        return f"{head}\n{indent(self.detail)}" if self.detail else head
 
 
 def _sep_for(text: str) -> str:
@@ -153,8 +172,8 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
             Finding(
                 SEVERITY_ERROR,
                 "same-root",
-                f"--cold and --hot are the same directory ({hot}); "
-                "there is nothing to move.",
+                "--cold and --hot are the same directory, so there is nothing to move.",
+                f"Both point at {hot}.",
             )
         )
         return audit
@@ -164,10 +183,11 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
             Finding(
                 SEVERITY_ERROR,
                 "cold-under-hot",
+                "the cold tier is inside the hot tier, where Frigate deletes things.",
                 f"--cold {cold} is inside --hot {hot}. Frigate's media sync walks "
                 f"{scanned} and unlinks every file with no matching database row, so a "
                 "cold tier stored there can be deleted by one click of the Maintenance "
-                "pane's sync button.",
+                "pane's sync button. Put the cold tier on its own mount.",
             )
         )
     elif _is_within(cold, hot.parent):
@@ -175,9 +195,10 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
             Finding(
                 SEVERITY_ERROR,
                 "cold-under-media-root",
-                f"--cold {cold} is inside Frigate's media root {hot.parent}. "
-                "Media sync cleans several trees under that root; keep the cold "
-                "tier on its own mount outside it.",
+                "the cold tier is inside Frigate's media root.",
+                f"--cold {cold} is inside {hot.parent}. Media sync cleans several "
+                "trees under that root, so keep the cold tier on its own mount "
+                "outside it.",
                 overridable=True,
             )
         )
@@ -187,8 +208,8 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
             Finding(
                 SEVERITY_ERROR,
                 "hot-under-cold",
-                f"--hot {hot} is inside --cold {cold}; "
-                "the move would recurse into itself.",
+                "the hot tier is inside the cold tier, so the move would recurse.",
+                f"--hot {hot} is inside --cold {cold}.",
             )
         )
 
@@ -197,12 +218,12 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
             Finding(
                 SEVERITY_ERROR,
                 "unverified-container-path",
-                f"no --db-path-prefix given, so {cold} will be written into the "
-                "database verbatim. That is only correct if the Frigate container "
-                "sees the cold tier at exactly that path. If it does not, playback "
-                "breaks and a media sync deletes the rows. Pass --db-path-prefix "
-                f"{cold}=<path inside the container>, or --i-know if the paths really "
-                "are identical.",
+                "cannot tell whether the Frigate container sees the cold tier.",
+                f"Without --db-path-prefix, {cold} is written into the database "
+                "verbatim, which is only correct if Frigate sees the cold tier at "
+                "exactly that path. If it does not, playback breaks and a media sync "
+                f"deletes the rows. Pass --db-path-prefix {cold}=<path inside the "
+                "container>, or --i-know if the paths really are identical.",
                 overridable=True,
             )
         )
@@ -213,9 +234,9 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
             Finding(
                 SEVERITY_ERROR,
                 "prefix-misses-cold",
-                f"--db-path-prefix does not cover --cold {cold}, so the paths "
-                "written to the database would still be host paths. Map the cold "
-                f"root itself, for example --db-path-prefix "
+                "--db-path-prefix does not cover the cold tier.",
+                f"Nothing maps {cold}, so host paths would go into the database. "
+                "Map the cold root itself: --db-path-prefix "
                 f"{cold}=/media/archive/{media}.",
             )
         )
@@ -228,10 +249,10 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
             Finding(
                 SEVERITY_ERROR,
                 "db-cold-under-db-hot",
-                f"--db-path-prefix maps --cold to {cold_db}, which is inside the "
-                f"path Frigate uses for hot recordings ({hot_db}). Frigate would "
-                "look for the files under its own media root, not find them, and "
-                "media sync would delete the rows.",
+                "--db-path-prefix points the cold tier back inside Frigate's own root.",
+                f"It maps --cold to {cold_db}, which is inside {hot_db}. Frigate would "
+                "look for the files under its own media root, not find them, and media "
+                "sync would delete the rows.",
             )
         )
     return audit

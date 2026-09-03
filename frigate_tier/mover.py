@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,6 +167,7 @@ def relocate(
     progress_every: int = 500,
     on_copied: Callable[[SegmentResult], None] | None = None,
     prune: bool = True,
+    limiter: RateLimiter | None = None,
 ) -> RelocationReport:
     """Move every candidate from ``source_root`` to ``dest_root``.
 
@@ -185,6 +188,7 @@ def relocate(
             path_map,
             on_copied,
             report,
+            limiter,
         )
         report.results.append(result)
         if result.status == STATUS_MOVED:
@@ -209,6 +213,7 @@ def _relocate_one(
     path_map: PathMap,
     on_copied: Callable[[SegmentResult], None] | None,
     report: RelocationReport,
+    limiter: RateLimiter | None = None,
 ) -> SegmentResult:
     source = candidate.local_path
     if not candidate.exists:
@@ -251,7 +256,7 @@ def _relocate_one(
                 )
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            digest = _copy_and_digest(source, part)
+            digest = _copy_and_digest(source, part, limiter)
             landed = _digest(part)
             if landed != digest:
                 part.unlink(missing_ok=True)
@@ -343,13 +348,37 @@ def _relocate_one(
             part.unlink(missing_ok=True)
 
 
+class RateLimiter:
+    """Keeps the copy loop under a bytes-per-second ceiling.
+
+    A first tiering run is usually hundreds of gigabytes over the same link the
+    cameras are writing to, so the useful knob is the one that stops this tool
+    saturating it.
+    """
+
+    def __init__(self, bytes_per_second: float) -> None:
+        self.bytes_per_second = bytes_per_second
+        self._started = time.monotonic()
+        self._sent = 0
+
+    def account(self, count: int) -> None:
+        if self.bytes_per_second <= 0:
+            return
+        self._sent += count
+        owed = self._sent / self.bytes_per_second - (time.monotonic() - self._started)
+        if owed > 0:
+            time.sleep(owed)
+
+
 @dataclass(frozen=True)
 class _Fingerprint:
     size: int
     sha256: str
 
 
-def _digest(source: Path, sink=None) -> _Fingerprint:
+def _digest(
+    source: Path, sink=None, limiter: RateLimiter | None = None
+) -> _Fingerprint:
     """Size and sha256 of ``source``, copying into ``sink`` on the way through."""
     digest = hashlib.sha256()
     size = 0
@@ -359,12 +388,16 @@ def _digest(source: Path, sink=None) -> _Fingerprint:
             size += len(chunk)
             if sink is not None:
                 sink.write(chunk)
+                if limiter is not None:
+                    limiter.account(len(chunk))
     return _Fingerprint(size, digest.hexdigest())
 
 
-def _copy_and_digest(source: Path, destination: Path) -> _Fingerprint:
+def _copy_and_digest(
+    source: Path, destination: Path, limiter: RateLimiter | None = None
+) -> _Fingerprint:
     with open(destination, "wb") as sink:
-        fingerprint = _digest(source, sink)
+        fingerprint = _digest(source, sink, limiter)
         sink.flush()
         os.fsync(sink.fileno())
     return fingerprint
@@ -417,6 +450,106 @@ def prune_empty_dirs(directories: Iterable[Path], root: Path) -> list[Path]:
             pruned.append(current)
             current = current.parent
     return pruned
+
+
+def _disk_usage(path: Path):
+    """disk_usage for ``path``, walking up to a parent that already exists."""
+    current = path
+    while True:
+        try:
+            return shutil.disk_usage(current)
+        except OSError:
+            if current.parent == current:
+                raise
+            current = current.parent
+
+
+def free_bytes(path: Path) -> int:
+    return _disk_usage(path).free
+
+
+def total_bytes(path: Path) -> int:
+    return _disk_usage(path).total
+
+
+def trim_to_free_target(
+    candidates: Sequence[Candidate], available: int, target: int
+) -> list[Candidate]:
+    """The shortest oldest-first run of candidates that reaches ``target`` free.
+
+    Candidates are already ordered by start_time, so the prefix is the oldest
+    footage, which is what a tiering policy wants to shed first.
+    """
+    if available >= target:
+        return []
+    needed = target - available
+    taken: list[Candidate] = []
+    freed = 0
+    for candidate in candidates:
+        taken.append(candidate)
+        freed += candidate.size
+        if freed >= needed:
+            break
+    return taken
+
+
+def same_filesystem(left: Path, right: Path) -> bool:
+    """Whether two roots live on one device, so moving between them frees nothing."""
+    try:
+        return _existing(left).stat().st_dev == _existing(right).stat().st_dev
+    except OSError:
+        return False
+
+
+def _existing(path: Path) -> Path:
+    current = path
+    while not current.exists() and current.parent != current:
+        current = current.parent
+    return current
+
+
+def sweep_stale_parts(
+    directories: Iterable[Path], older_than_seconds: float = 3600
+) -> list[Path]:
+    """Remove leftover .part files from a run that was killed mid-copy.
+
+    Only the directories this run is about to write into, because walking a whole
+    cold tier on every pass would cost more than the move. A segment killed
+    mid-copy is still hot, so the run that retries it comes back to the same
+    directory.
+
+    The age guard keeps a second frigate-tier running against the same cold tier
+    from deleting a copy that is still in flight.
+    """
+    removed: list[Path] = []
+    cutoff = time.time() - older_than_seconds
+    for directory in sorted(set(directories)):
+        try:
+            parts = sorted(directory.glob(f"*{PART_SUFFIX}"))
+        except OSError:
+            continue
+        for part in parts:
+            try:
+                if part.stat().st_mtime < cutoff:
+                    part.unlink()
+                    removed.append(part)
+            except OSError:
+                continue
+    return removed
+
+
+def destination_dirs(
+    candidates: Sequence[Candidate], source_root: Path, dest_root: Path
+) -> set[Path]:
+    """Where this run will write, without doing any work yet."""
+    dirs: set[Path] = set()
+    for candidate in candidates:
+        try:
+            relative = candidate.local_path.relative_to(source_root)
+        except ValueError:
+            continue
+        dirs.add((dest_root / relative).parent)
+    return dirs
 
 
 def _busy(exc: OperationalError) -> Exception:

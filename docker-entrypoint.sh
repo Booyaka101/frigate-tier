@@ -24,22 +24,32 @@ if [ -z "$COLD" ]; then
     exit 1
 fi
 
-# shellcheck disable=SC2086
 prefix_args() {
     for prefix in $PREFIXES; do
         printf ' --db-path-prefix %s' "$prefix"
     done
 }
 
-COMMIT="--commit"
-if [ "${FRIGATE_TIER_DRY_RUN:-0}" = "1" ]; then
-    COMMIT=""
+optional() {
+    [ -n "$2" ] && printf ' %s %s' "$1" "$2"
+    return 0
+}
+
+MEDIA="recordings"
+PREVIEW_ROOTS=""
+if [ -n "$PREVIEW_HOT" ] && [ -n "$PREVIEW_COLD" ]; then
+    MEDIA="all"
+    PREVIEW_ROOTS="--preview-hot $PREVIEW_HOT --preview-cold $PREVIEW_COLD"
 fi
 
+COMMIT="--commit"
+[ "${FRIGATE_TIER_DRY_RUN:-0}" = "1" ] && COMMIT=""
 ACK=""
-if [ "${FRIGATE_TIER_I_KNOW:-0}" = "1" ]; then
-    ACK="--i-know"
-fi
+[ "${FRIGATE_TIER_I_KNOW:-0}" = "1" ] && ACK="--i-know"
+
+TUNING="$(optional --until-free "${FRIGATE_TIER_UNTIL_FREE:-}")"
+TUNING="$TUNING$(optional --min-free-on-cold "${FRIGATE_TIER_MIN_FREE_ON_COLD:-}")"
+TUNING="$TUNING$(optional --bandwidth-limit "${FRIGATE_TIER_BANDWIDTH_LIMIT:-}")"
 
 running=1
 status=0
@@ -50,29 +60,35 @@ report() {
     status="$1"
 }
 
-run_pass() {
-    media="$1"
-    hot="$2"
-    cold="$3"
+pass() {
     # shellcheck disable=SC2046,SC2086
     frigate-tier move \
-        --db "$DB" --media "$media" --hot "$hot" --cold "$cold" \
+        --db "$DB" --media "$MEDIA" --hot "$HOT" --cold "$COLD" $PREVIEW_ROOTS \
         --older-than "$OLDER_THAN" \
-        $(prefix_args) $COMMIT $ACK $EXTRA || report $? "move ($media)"
+        $(prefix_args) $TUNING $COMMIT $ACK $EXTRA || report $? "move"
 
     if [ "${FRIGATE_TIER_VERIFY:-0}" = "1" ]; then
         # shellcheck disable=SC2046,SC2086
-        frigate-tier verify --db "$DB" --cold "$cold" $(prefix_args) \
-            || report $? "verify ($media)"
+        frigate-tier verify --db "$DB" --cold "$COLD" $(prefix_args) \
+            || report $? "verify (recordings)"
+        if [ -n "$PREVIEW_COLD" ]; then
+            # shellcheck disable=SC2046,SC2086
+            frigate-tier verify --db "$DB" --cold "$PREVIEW_COLD" $(prefix_args) \
+                || report $? "verify (previews)"
+        fi
+    fi
+
+    if [ "${FRIGATE_TIER_SYNC_REPORT:-0}" = "1" ]; then
+        # shellcheck disable=SC2046,SC2086
+        frigate-tier sync-report --db "$DB" --recordings-root "$HOT" \
+            $(optional --previews-root "$PREVIEW_HOT") $(prefix_args) \
+            || report $? "sync-report"
     fi
 }
 
 while [ "$running" = "1" ]; do
     echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') frigate-tier pass starting"
-    run_pass recordings "$HOT" "$COLD"
-    if [ -n "$PREVIEW_HOT" ] && [ -n "$PREVIEW_COLD" ]; then
-        run_pass previews "$PREVIEW_HOT" "$PREVIEW_COLD"
-    fi
+    pass
 
     if [ "$INTERVAL" = "0" ]; then
         exit "$status"

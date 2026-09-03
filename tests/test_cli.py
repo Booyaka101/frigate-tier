@@ -7,7 +7,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from conftest import digests, missing_files, paths_under
+from conftest import assert_refused, digests, missing_files, move_json, paths_under
 
 from frigate_tier.__main__ import cli
 
@@ -250,20 +250,9 @@ def test_move_reports_and_keeps_a_row_whose_file_is_gone(tree, runner):
     victim = stale(tree)[0]["path"]
     victim.unlink()
 
-    result = runner.invoke(
-        cli,
-        [
-            "move",
-            *base_args(tree),
-            "--older-than",
-            OLDER_THAN,
-            "--commit",
-            "--i-know",
-            "--json",
-        ],
+    payload = move_json(
+        runner, [*base_args(tree), "--older-than", OLDER_THAN, "--i-know"]
     )
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
     assert payload["missing"] == 1
     assert payload["moved"] == 39
     assert payload["failures"] == 0
@@ -289,11 +278,9 @@ def test_move_refuses_a_cold_path_under_the_hot_root(tree, runner):
             "--i-know",
         ],
     )
-    assert result.exit_code == 3
-    assert "REFUSING" in result.output
-    assert "media sync" in result.output
+    assert_refused(result, tree, "the cold tier is inside the hot tier")
+    assert "Maintenance pane" in " ".join(result.output.split())
     assert not (tree.hot / "archive").exists()
-    assert not missing_files(tree.db_path)
 
 
 def test_move_refuses_without_a_container_mapping(tree, runner):

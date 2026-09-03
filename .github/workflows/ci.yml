@@ -52,3 +52,18 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -t frigate-tier:ci .
       - run: docker run --rm frigate-tier:ci --version
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f tests/e2e/Dockerfile -t frigate-tier:e2e .
+      - name: Move 315 real segments and check none were lost
+        run: |
+          mkdir -p /tmp/ft-e2e
+          docker run --rm -v "$PWD:/src" -v /tmp/ft-e2e:/work \
+            frigate-tier:e2e sh /src/tests/e2e/run.sh
+      - name: SIGKILL a move in flight and check none were lost
+        run: |
+          docker run --rm -v "$PWD:/src" -v /tmp/ft-e2e:/work \
+            frigate-tier:e2e sh /src/tests/e2e/crash.sh

@@ -14,7 +14,9 @@ answers the "it is quite achievable outside of Frigate" line with "it isn't for 
 pretty complex."
 
 frigate-tier is that job done properly: one command, per-segment verification, a transaction per
-file, and refusals for the two layouts that quietly destroy footage.
+file, and refusals for the layouts that quietly destroy footage.
+
+![frigate-tier plan](docs/screenshots/plan.png)
 
 ## Why moving a segment works at all
 
@@ -32,19 +34,15 @@ So a segment plays from any path the Frigate container can see, as long as the r
 match. That is the whole trick, and it is why `--db-path-prefix` below matters so much.
 
 The test suite proves it rather than asserting it. `tests/test_playback.py` builds the same concat
-playlist Frigate builds, from the paths in the database after a move, and hands it to ffmpeg. Here
-is that playlist for one camera, spanning both tiers after `move --older-than 3d`:
+playlist Frigate builds, from the paths in the database after a move, and hands it to ffmpeg. The
+end to end run does it at scale: after archiving 252 of 315 segments, each camera's playlist spans
+both tiers and still concatenates to exactly what it did before.
 
 ```
-file 'D:/tmp/ft-demo/mnt/nas/frigate/recordings/2026-08-29/02/driveway/00.00.mp4'
-file 'D:/tmp/ft-demo/mnt/nas/frigate/recordings/2026-08-29/02/driveway/00.10.mp4'
-...
-file 'D:/tmp/ft-demo/media/frigate/recordings/2026-09-03/00/driveway/01.20.mp4'
-file 'D:/tmp/ft-demo/media/frigate/recordings/2026-09-03/00/driveway/01.30.mp4'
+driveway:   100 clips concat to 1000.00s (sum of parts 1000.00s) ok
+front_door: 100 clips concat to 1000.00s (sum of parts 1000.00s) ok
+side_gate:  100 clips concat to 1000.00s (sum of parts 1000.00s) ok
 ```
-
-30 clips, 20 of them on the cold tier, `ffmpeg -f concat -c copy` produces one 84.97 second mp4.
-Same duration as before the move.
 
 ## Install
 
@@ -67,31 +65,19 @@ $ frigate-tier plan --db /config/frigate.db \
       --older-than 3d \
       --db-path-prefix /mnt/nas/frigate/recordings=/media/archive/recordings
 camera        segments   size      oldest                newest
-driveway            20   415.4 KB  2026-08-29 02:00Z     2026-08-30 02:01Z
-front_door          20   415.4 KB  2026-08-29 02:00Z     2026-08-30 02:01Z
-total               40   830.9 KB
+driveway            45   103.9 MB  2026-08-25 02:00Z     2026-08-27 02:02Z
+front_door          45   103.9 MB  2026-08-25 02:00Z     2026-08-27 02:02Z
+side_gate           45   104.1 MB  2026-08-25 02:00Z     2026-08-27 02:02Z
+total              135   312.0 MB
 dry run - nothing moved
 ```
 
-Add `--commit` to do it:
+Add `--commit` to do it, then check the result:
 
-```
-$ frigate-tier move ... --commit
-  20/40 segments
-  40/40 segments
-pruned 8 empty directories
-moved 40 segments, 830.9 KB, 0 failures, 40 rows updated
-```
+![frigate-tier move, verify and sync-report](docs/screenshots/move-verify.png)
 
-Then confirm every archived row still has its file at the size Frigate recorded:
-
-```
-$ frigate-tier verify --db /config/frigate.db --cold /mnt/nas/frigate/recordings \
-      --db-path-prefix /mnt/nas/frigate/recordings=/media/archive/recordings
-checked 40 rows under /media/archive/recordings, 0 problems
-```
-
-`verify` exits non-zero on the first mismatch, so it works as a cron health check.
+`verify` exits non-zero on any mismatch, so it works as a cron health check. `sync-report` is the
+one to run before you touch Frigate's Maintenance pane; see the hazard section below.
 
 `restore` reverses a move, file for file and row for row:
 
@@ -157,43 +143,89 @@ Consequences, all enforced in `frigate_tier/safety.py`:
   segment in a state where neither the row nor a file refers to it.
 - **A failed byte check leaves the source in place** and skips the row.
 
-Run a media sync yourself, after a move, if you want to see that nothing is orphaned. It should
-report zero orphans in either direction.
+You do not have to take that on trust. `sync-report` runs the same comparison Frigate's sync runs,
+read only, and tells you exactly what the button would delete. A healthy tiered setup reports
+nothing on both sides. Point it at the wrong paths and it shows you the damage you avoided:
+
+![frigate-tier sync-report with the mapping missing](docs/screenshots/sync-report.png)
+
+```bash
+frigate-tier sync-report --db /config/frigate.db \
+    --recordings-root /media/frigate/recordings \
+    --previews-root /media/frigate/clips/previews \
+    --db-path-prefix /mnt/nas/frigate/recordings=/media/archive/recordings
+```
+
+It exits non-zero if anything would be deleted, so it belongs in the same cron entry as `verify`.
+
+And this is what the refusals look like when you get the layout wrong:
+
+![frigate-tier refusing two bad layouts](docs/screenshots/refusals.png)
 
 ## Commands
 
-All four take `--db`, `--camera` (repeatable), `--limit`, `--db-path-prefix` (repeatable) and
-`--json`.
+Every command takes `--db`, `--camera` (repeatable), `--limit`, `--db-path-prefix` (repeatable)
+and `--json`.
 
-| Command   | Roots            | What it does                                                |
-| --------- | ---------------- | ----------------------------------------------------------- |
-| `plan`    | `--hot --cold`   | Prints the table above. Reads only.                          |
-| `move`    | `--hot --cold`   | Hot to cold. A dry run without `--commit`.                   |
-| `restore` | `--hot --cold`   | Cold back to hot. A dry run without `--commit`.              |
-| `verify`  | `--cold`         | Every row under the cold root still has its file, right size |
+| Command       | Roots                | What it does                                        |
+| ------------- | -------------------- | --------------------------------------------------- |
+| `plan`        | `--hot --cold`       | Prints the table above. Reads only.                  |
+| `move`        | `--hot --cold`       | Hot to cold. A dry run without `--commit`.           |
+| `restore`     | `--hot --cold`       | Cold back to hot. A dry run without `--commit`.      |
+| `verify`      | `--cold`             | Every archived row still has its file, at its size.  |
+| `sync-report` | `--recordings-root`  | What Frigate's media sync would delete. Reads only.  |
 
-`plan`, `move` and `restore` also take `--media`. `verify` does not: it checks both tables for rows
-under `--cold`, so one call covers recordings and previews if they share a root.
+### Choosing what moves
 
-`--media` picks the table and tree: `recordings` (default) or `previews`. Preview clips live under
-`/media/frigate/clips/previews/<camera>/`, a different tree from recordings, so archive them with a
-second run:
+`--older-than` takes `s`, `m`, `h`, `d` or `w` suffixes and filters on `end_time`, so a segment
+Frigate is still writing is never a candidate. It is required on `plan` and `move`, and it is the
+floor under everything else here.
+
+`--until-free` stops as soon as the hot filesystem has that much space, oldest segments first. It
+takes a size or a percentage of the filesystem:
 
 ```bash
-frigate-tier move --media previews \
+frigate-tier move ... --older-than 3d --until-free 500G --commit
+frigate-tier move ... --older-than 3d --until-free 20%  --commit
+```
+
+`--min-free-on-cold` refuses the move unless the cold tier still has that much free afterwards.
+Even without it, a move that plainly would not fit is refused. Both are overridable with `--i-know`.
+
+`--bandwidth-limit 50M` caps the write rate to the cold tier. A first run is usually hundreds of
+gigabytes across the same link the cameras write over, and this is the knob that keeps it out of
+the way.
+
+`--limit N` stops after N segments, which is the easy way to try a real move on ten files first.
+
+### Choosing which media
+
+`--media` picks the table and tree: `recordings` (default), `previews`, or `all`. Preview clips live
+under `/media/frigate/clips/previews/<camera>/`, a different tree from recordings, so `all` needs
+its own pair of roots:
+
+```bash
+frigate-tier move --media all \
     --db /config/frigate.db \
-    --hot /media/frigate/clips/previews \
-    --cold /mnt/nas/frigate/previews \
+    --hot /media/frigate/recordings --cold /mnt/nas/frigate/recordings \
+    --preview-hot /media/frigate/clips/previews \
+    --preview-cold /mnt/nas/frigate/previews \
     --older-than 3d \
+    --db-path-prefix /mnt/nas/frigate/recordings=/media/archive/recordings \
     --db-path-prefix /mnt/nas/frigate/previews=/media/archive/previews \
     --commit
 ```
 
-`--older-than` takes `s`, `m`, `h`, `d` or `w` suffixes, and filters on `end_time`, so a segment
-Frigate is still writing is never a candidate.
+Every root is audited before anything moves, so a bad previews layout stops the recordings pass too.
+
+`verify` has no `--media`: it checks both tables for rows under `--cold`, so one call covers both if
+they share a root.
+
+With `--json`, a single media type gives one report object. `--media all` gives
+`{"media": "all", "passes": [<recordings report>, <previews report>]}`.
 
 Exit codes: `0` success, `1` an operational failure (unreadable database, failed segments, a verify
-mismatch), `2` a bad command line, `3` a safety refusal.
+mismatch, a sync-report that found something), `2` a bad command line, `3` a safety refusal.
 
 ## Docker
 
@@ -208,14 +240,16 @@ services:
       - /mnt/nas/frigate/recordings:/media/archive/recordings
 
   frigate-tier:
-    image: ghcr.io/booyaka101/frigate-tier:1.0.0
+    image: ghcr.io/booyaka101/frigate-tier:1.1.0
     restart: unless-stopped
     environment:
       FRIGATE_TIER_COLD: /mnt/archive/recordings
       FRIGATE_TIER_OLDER_THAN: 3d
       FRIGATE_TIER_INTERVAL: 3600
       FRIGATE_TIER_DB_PATH_PREFIX: /mnt/archive/recordings=/media/archive/recordings
+      FRIGATE_TIER_BANDWIDTH_LIMIT: 50M
       FRIGATE_TIER_VERIFY: "1"
+      FRIGATE_TIER_SYNC_REPORT: "1"
     volumes:
       - /path/to/frigate/config:/config
       - /path/to/fast/media:/media/frigate
@@ -227,25 +261,33 @@ frigate-tier and `/media/archive/recordings` for Frigate. That difference is exa
 `FRIGATE_TIER_DB_PATH_PREFIX` exists to bridge. Mount it at the same path in both and you can drop
 the prefix and set `FRIGATE_TIER_I_KNOW=1` instead.
 
-| Variable                      | Default                       |
-| ----------------------------- | ----------------------------- |
-| `FRIGATE_TIER_DB`             | `/config/frigate.db`          |
-| `FRIGATE_TIER_HOT`            | `/media/frigate/recordings`   |
-| `FRIGATE_TIER_COLD`           | required                      |
-| `FRIGATE_TIER_OLDER_THAN`     | `3d`                          |
-| `FRIGATE_TIER_INTERVAL`       | `3600` seconds, `0` runs once |
-| `FRIGATE_TIER_DB_PATH_PREFIX` | unset, space separated        |
-| `FRIGATE_TIER_PREVIEW_HOT`    | unset, enables a second pass  |
-| `FRIGATE_TIER_PREVIEW_COLD`   | unset                         |
-| `FRIGATE_TIER_VERIFY`         | `0`                           |
-| `FRIGATE_TIER_DRY_RUN`        | `0`                           |
-| `FRIGATE_TIER_I_KNOW`         | `0`                           |
-| `FRIGATE_TIER_ARGS`           | unset, appended verbatim      |
+| Variable                        | Default                                |
+| ------------------------------- | -------------------------------------- |
+| `FRIGATE_TIER_DB`               | `/config/frigate.db`                   |
+| `FRIGATE_TIER_HOT`              | `/media/frigate/recordings`            |
+| `FRIGATE_TIER_COLD`             | required                               |
+| `FRIGATE_TIER_OLDER_THAN`       | `3d`                                   |
+| `FRIGATE_TIER_INTERVAL`         | `3600` seconds, `0` runs once and exits |
+| `FRIGATE_TIER_DB_PATH_PREFIX`   | unset, space separated                 |
+| `FRIGATE_TIER_PREVIEW_HOT`      | unset, both preview vars switch on `--media all` |
+| `FRIGATE_TIER_PREVIEW_COLD`     | unset                                  |
+| `FRIGATE_TIER_UNTIL_FREE`       | unset                                  |
+| `FRIGATE_TIER_MIN_FREE_ON_COLD` | unset                                  |
+| `FRIGATE_TIER_BANDWIDTH_LIMIT`  | unset                                  |
+| `FRIGATE_TIER_VERIFY`           | `0`                                    |
+| `FRIGATE_TIER_SYNC_REPORT`      | `0`                                    |
+| `FRIGATE_TIER_DRY_RUN`          | `0`                                    |
+| `FRIGATE_TIER_I_KNOW`           | `0`                                    |
+| `FRIGATE_TIER_ARGS`             | unset, appended verbatim               |
+
+With `FRIGATE_TIER_INTERVAL=0` the container runs one pass and exits with the worst exit code of
+that pass, which is what you want from a cron or a systemd timer. On the interval loop it stops
+promptly on `SIGTERM`, between segments, never mid-copy.
 
 Passing arguments to the container skips the loop and runs the CLI once:
 
 ```bash
-docker run --rm -v /path/to/config:/config ghcr.io/booyaka101/frigate-tier:1.0.0 --help
+docker run --rm -v /path/to/config:/config ghcr.io/booyaka101/frigate-tier:1.1.0 --help
 ```
 
 ## What one segment actually does
@@ -276,41 +318,82 @@ job, and it keeps working across the move because `cleanup.py` unlinks by stored
 
 ## Limitations
 
-- One media type per run. Recordings and previews live in different trees, so they need different
-  `--hot`/`--cold` pairs.
 - Sizes are compared against `segment_size`, which Frigate stores as `round(bytes / 2**20, 2)`.
   A byte-identical file reproduces that exactly. If your storage does something exotic, loosen it
   with `verify --tolerance-mb`.
 - `verify` only looks at rows under `--cold`. Rows still on the hot tier are Frigate's business.
+  `sync-report` is the one that looks at everything.
+- `sync-report` answers from where it is standing. If it runs on the host and Frigate is in a
+  container, get the `--db-path-prefix` right or the answer is about the host, not about Frigate.
 - Nothing here detects that you have pointed Frigate at the wrong mount. It can only refuse the
   layouts it can see are wrong, which is why the container mapping is a refusal and why you should
   confirm playback in the UI after the first move.
+- `--until-free` reads the free space on the hot filesystem before it starts and does not re-check
+  as it goes, so on a live Frigate it can undershoot slightly. Run it on an interval.
 - Moving across filesystems is a full copy. A large first run is bounded by your NAS write speed,
-  not by the tool.
-- A `SIGKILL` in the middle of a copy can leave one `<segment>.frigate-tier.part` file on the cold
-  tier. Nothing reads it and the next run over that segment overwrites it, but it is not swept up
-  automatically. `find <cold> -name '*.frigate-tier.part' -delete` if you care.
+  not by the tool. `--bandwidth-limit` makes that deliberate rather than accidental.
+- A `SIGKILL` in the middle of a copy leaves one `<segment>.frigate-tier.part` on the cold tier.
+  The next run over that segment overwrites it, and part files older than an hour are swept from
+  the directories a move is about to write into. That is deliberately not a walk of the whole cold
+  tier, so a part orphaned somewhere the tool no longer visits needs
+  `find <cold> -name '*.frigate-tier.part' -delete`. Nothing ever reads one.
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
 pytest
+ruff check frigate_tier tests
 ```
 
-The suite is 63 tests against real media. `frigate_tier/fixture.py` renders 60 real mp4 segments
-with `ffmpeg -f lavfi -i testsrc`, laid out as `YYYY-MM-DD/HH/<camera>/MM.SS.mp4` across two cameras
-and three days, plus preview clips, then writes a SQLite database with the mirrored models pointing
-at them. There are no mocks: the tests move real files and read the real database back with plain
-`sqlite3`. ffmpeg has to be on PATH or the suite skips.
+The suite is 106 tests against real media, no mocks anywhere. `frigate_tier/fixture.py` renders real
+mp4 segments with `ffmpeg -f lavfi -i testsrc2`, laid out as `YYYY-MM-DD/HH/<camera>/MM.SS.mp4`,
+plus preview clips, then writes a SQLite database with the mirrored models pointing at them. Every
+segment gets its own hue and marker box, so a mixed-up file shows up as a changed sha256. The tests
+move real files and read the real database back with plain `sqlite3`. ffmpeg has to be on PATH or
+the suite skips.
 
-`ruff check frigate_tier tests` has to be clean too; CI runs it, plus the suite on Python 3.11,
-3.12 and 3.13 against both peewee 3.17 (Frigate's own pin) and the current release.
+CI runs the suite on Python 3.11, 3.12 and 3.13, against both peewee 3.17 (Frigate's own pin) and
+the current release.
+
+### The end to end run
+
+`tests/e2e/` is the part that answers "did it lose any video". It runs in a Linux container against
+a realistic tree: three cameras, five days, 10 second 720p segments, about 640 MB.
+
+```bash
+docker build -f tests/e2e/Dockerfile -t frigate-tier:e2e .
+docker run --rm -v "$PWD:/src" -v /tmp/ft-e2e:/work frigate-tier:e2e sh /src/tests/e2e/run.sh
+docker run --rm -v "$PWD:/src" -v /tmp/ft-e2e:/work frigate-tier:e2e sh /src/tests/e2e/crash.sh
+```
+
+`run.sh` fingerprints every segment by sha256, frame count and decoded duration, moves both media
+types, then compares content-keyed so a move between roots is not counted as a difference. It also
+decodes every file with `ffmpeg -f null` at each step, which is what catches a truncated moov atom
+that a self-consistent hash would miss. Then it restores and compares again.
+
+`crash.sh` is the one worth reading. It starts a move, `SIGKILL`s it four seconds in, and checks the
+wreckage: no row pointing at a missing file, no segment lost, everything still decoding, playback
+still concatenating. Then it resumes and finishes the job. A real run from this machine:
+
+```
+=== 3. state right after the kill ===
+recordings   hot=107   cold=13
+part files left   : 1
+=== 4. no row points at a missing file, and no segment was lost ===
+driveway: 60 clips concat to 600.00s (sum of parts 600.00s) ok
+front_door: 60 clips concat to 600.00s (sum of parts 600.00s) ok
+126 segments before, 126 after, 0 problems
+decoded 126 segments, 0 corrupt
+=== 5. resume, and finish the job ===
+moved 67 segments, 154.8 MB, 0 failures, 67 rows updated
+checked 80 rows under /media/archive/recordings, 0 problems
+```
 
 To poke at it by hand:
 
 ```bash
-python -m frigate_tier.fixture /tmp/frigate-demo
+python -m frigate_tier.fixture /tmp/frigate-demo --profile realistic
 frigate-tier plan --db /tmp/frigate-demo/config/frigate.db \
     --hot /tmp/frigate-demo/media/frigate/recordings \
     --cold /tmp/frigate-demo/mnt/nas/frigate/recordings \

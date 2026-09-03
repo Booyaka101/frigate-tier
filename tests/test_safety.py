@@ -124,3 +124,36 @@ def test_the_empty_plan_still_prints_a_table():
         "camera        segments   size      oldest                newest",
         "total                0   0 B",
     ]
+
+
+def test_a_refusal_reads_as_a_summary_plus_a_wrapped_paragraph(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "80")
+    finding = audit_roots(HOT, HOT / "archive", NO_MAP, "recordings").findings[0]
+    rendered = finding.render().splitlines()
+
+    assert rendered[0].startswith("REFUSING: ")
+    assert "\n" not in finding.summary
+    assert all(line.startswith("  ") for line in rendered[1:])
+    assert all(len(line) <= 100 for line in rendered)
+    assert "Maintenance pane" in " ".join(rendered)
+
+
+def test_a_warning_uses_the_same_shape_with_a_softer_label():
+    finding = audit_roots(HOT, Path("/mnt/nas/recordings"), NO_MAP, "recordings")
+    rendered = finding.findings[0].render(False)
+    assert rendered.startswith("warning: ")
+    assert "--db-path-prefix" in " ".join(rendered.split())
+
+
+def test_every_finding_has_a_short_summary():
+    layouts = [
+        (HOT, HOT),
+        (HOT, HOT / "archive"),
+        (HOT, Path("/media/frigate/archive")),
+        (HOT, Path("/media/frigate")),
+        (HOT, Path("/mnt/nas/recordings")),
+    ]
+    for hot, cold in layouts:
+        for finding in audit_roots(hot, cold, NO_MAP, "recordings").findings:
+            assert len(finding.summary) <= 80, finding.code
+            assert finding.summary == finding.summary.strip()
