@@ -201,6 +201,12 @@ The image loops on an interval. It is meant to sit beside Frigate in the same co
 
 ```yaml
 services:
+  frigate:
+    # ... your existing frigate service, plus one extra mount so it can open
+    # what frigate-tier archives:
+    volumes:
+      - /mnt/nas/frigate/recordings:/media/archive/recordings
+
   frigate-tier:
     image: ghcr.io/booyaka101/frigate-tier:1.0.0
     restart: unless-stopped
@@ -216,6 +222,11 @@ services:
       - /mnt/nas/frigate/recordings:/mnt/archive/recordings
 ```
 
+The same NAS directory is mounted into both containers, at `/mnt/archive/recordings` for
+frigate-tier and `/media/archive/recordings` for Frigate. That difference is exactly what
+`FRIGATE_TIER_DB_PATH_PREFIX` exists to bridge. Mount it at the same path in both and you can drop
+the prefix and set `FRIGATE_TIER_I_KNOW=1` instead.
+
 | Variable                      | Default                       |
 | ----------------------------- | ----------------------------- |
 | `FRIGATE_TIER_DB`             | `/config/frigate.db`          |
@@ -230,10 +241,6 @@ services:
 | `FRIGATE_TIER_DRY_RUN`        | `0`                           |
 | `FRIGATE_TIER_I_KNOW`         | `0`                           |
 | `FRIGATE_TIER_ARGS`           | unset, appended verbatim      |
-
-Note the compose example above: because the container sees the archive at `/mnt/archive/recordings`
-and Frigate sees it at `/media/archive/recordings`, the prefix is still required. If you mount it at
-the same path in both containers, drop the prefix and set `FRIGATE_TIER_I_KNOW=1`.
 
 Passing arguments to the container skips the loop and runs the CLI once:
 
