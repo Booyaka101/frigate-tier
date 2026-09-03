@@ -108,10 +108,11 @@ contributions. A third-party tool posted there reads as ignoring the maintainers
 their audience. The README used to name it as the first distribution step; that was wrong and
 the section is gone.
 
-The remaining channel worth using is a PR to Frigate's docs
-(docs/docs/integrations/third_party_extensions.md), which states outright that it can be
-extended by PR, and whose last eight community entries were four-line additions by each tool's
-own author. Note Frigate's AI policy: a person has to read and send the PR.
+A four-line entry on Frigate's third-party extensions docs page was prepared and then
+dropped. The page invites PRs and its recent entries are four-line additions by each tool's own
+author, but Frigate's AI policy (added 2026-07-25) requires a person to read and send the PR, and
+every AI-disclosed precedent on that page predates the policy. Not worth the effort for a docs
+line. The fork was deleted.
 
 ## Next steps, if there is a v1.2
 
