@@ -318,6 +318,8 @@ def _relocate_one(
                 detail="row changed underneath us, nothing updated",
             )
 
+        # The database now owns this copy. Later failures must not roll it back.
+        copied_here = False
         report.rows_updated += updated
         report.bytes_moved += candidate.size
 

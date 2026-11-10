@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Preserve the destination when a move or restore is interrupted after its database
+  update commits. Cleanup could previously delete the file the row now points to,
+  potentially losing the segment if the source had already been removed.
+
 ## [1.1.0] - 2026-09-03
 
 ### Added

@@ -86,7 +86,7 @@ def test_a_move_frigate_cannot_see_is_reported_as_row_deletion(tree, runner):
 
 
 def test_an_orphaned_file_is_reported(tree, runner):
-    stray = tree.hot / "2026-08-29" / "02" / "driveway" / "99.99.mp4"
+    stray = next(tree.hot.rglob("*.mp4")).with_name("99.99.mp4")
     stray.write_bytes(b"not in the database")
 
     result = runner.invoke(cli, [*report_args(tree), "--json"])
@@ -100,7 +100,8 @@ def test_an_orphaned_file_is_reported(tree, runner):
 
 
 def test_a_leftover_part_file_is_counted_separately(tree, runner):
-    part = tree.hot / "2026-08-29" / "02" / "driveway" / f"00.00.mp4{PART_SUFFIX}"
+    segment = next(tree.hot.rglob("*.mp4"))
+    part = segment.with_name(segment.name + PART_SUFFIX)
     part.write_bytes(b"interrupted")
 
     result = runner.invoke(cli, [*report_args(tree), "--json"])
@@ -124,7 +125,7 @@ def test_the_scan_reads_previews_one_level_deep_like_frigate_does(tree):
 
 def test_the_scan_changes_nothing_on_disk(tree, runner):
     before = sorted(p for p in tree.hot.rglob("*") if p.is_file())
-    stray = tree.hot / "2026-08-29" / "02" / "driveway" / "99.99.mp4"
+    stray = next(tree.hot.rglob("*.mp4")).with_name("99.99.mp4")
     stray.write_bytes(b"orphan")
 
     runner.invoke(cli, report_args(tree))
