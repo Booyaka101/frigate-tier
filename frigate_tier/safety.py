@@ -96,8 +96,17 @@ class PathMap:
                     "(for example "
                     "/mnt/nas/frigate/recordings=/media/archive/recordings)"
                 )
-            pairs.append((Path(local.strip()), remote.strip().rstrip("/\\")))
+            pairs.append((Path(local.strip()), remote.strip().rstrip("/\\") or "/"))
         pairs.sort(key=lambda pair: len(str(pair[0])), reverse=True)
+        for index, (root, remote) in enumerate(pairs):
+            for other_root, other_remote in pairs[index + 1 :]:
+                if (root == other_root and remote != other_remote) or (
+                    remote == other_remote and root != other_root
+                ):
+                    raise SafetyRefusal(
+                        "ambiguous --db-path-prefix: each local root and database "
+                        "root must have only one mapping"
+                    )
         return cls(tuple(pairs))
 
     def __bool__(self) -> bool:
@@ -165,9 +174,11 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
     audit = Audit()
     hot = _absolute(hot)
     cold = _absolute(cold)
+    physical_hot = hot.resolve()
+    physical_cold = cold.resolve()
     scanned = "the recordings root" if media == "recordings" else "the previews root"
 
-    if hot == cold:
+    if physical_hot == physical_cold:
         audit.findings.append(
             Finding(
                 SEVERITY_ERROR,
@@ -178,7 +189,7 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
         )
         return audit
 
-    if _is_within(cold, hot):
+    if _is_within(physical_cold, physical_hot):
         audit.findings.append(
             Finding(
                 SEVERITY_ERROR,
@@ -190,7 +201,7 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
                 "pane's sync button. Put the cold tier on its own mount.",
             )
         )
-    elif _is_within(cold, hot.parent):
+    elif _is_within(physical_cold, physical_hot.parent):
         audit.findings.append(
             Finding(
                 SEVERITY_ERROR,
@@ -203,7 +214,7 @@ def audit_roots(hot: Path, cold: Path, path_map: PathMap, media: str) -> Audit:
             )
         )
 
-    if _is_within(hot, cold):
+    if _is_within(physical_hot, physical_cold):
         audit.findings.append(
             Finding(
                 SEVERITY_ERROR,

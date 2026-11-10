@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 from conftest import digests, missing_files
@@ -81,6 +83,63 @@ def test_an_interrupted_run_resumes(tree):
 
     assert report.failures == 0
     assert report.moved == 36  # 40 minus the 4 that committed before the interrupt
+    assert missing_files(tree.db_path) == []
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, RuntimeError])
+@pytest.mark.parametrize("source_removed", [False, True])
+def test_post_commit_failure_preserves_the_committed_destination(
+    tree, monkeypatch, error, source_removed
+):
+    database = open_database(tree.db_path)
+    candidate = _candidates(tree, limit=1)[0]
+    source = candidate.local_path
+    destination = tree.cold / source.relative_to(tree.hot)
+    original = source.read_bytes()
+    unlink = Path.unlink
+
+    def fail_source_cleanup(path, *args, **kwargs):
+        if path == source:
+            if source_removed:
+                unlink(path, *args, **kwargs)
+            raise error("failure after the database committed")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_source_cleanup)
+    with pytest.raises(error):
+        relocate(database, Recordings, [candidate], tree.hot, tree.cold, PathMap())
+    close_database()
+
+    with sqlite3.connect(tree.db_path) as conn:
+        stored = conn.execute(
+            "select path from recordings where id = ?", (candidate.row_id,)
+        ).fetchone()[0]
+    assert stored == str(destination)
+    assert destination.read_bytes() == original
+    assert source.exists() is not source_removed
+    assert missing_files(tree.db_path) == []
+
+
+def test_interrupt_at_commit_boundary_preserves_the_destination(tree, monkeypatch):
+    database = open_database(tree.db_path)
+    candidate = _candidates(tree, limit=1)[0]
+    destination = tree.cold / candidate.local_path.relative_to(tree.hot)
+    original = candidate.local_path.read_bytes()
+    atomic = database.atomic
+
+    @contextmanager
+    def interrupt_on_exit():
+        with atomic():
+            yield
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(database, "atomic", interrupt_on_exit)
+    with pytest.raises(KeyboardInterrupt):
+        relocate(database, Recordings, [candidate], tree.hot, tree.cold, PathMap())
+    close_database()
+
+    assert destination.read_bytes() == original
+    assert candidate.local_path.read_bytes() == original
     assert missing_files(tree.db_path) == []
 
 

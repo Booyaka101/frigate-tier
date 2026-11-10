@@ -86,7 +86,7 @@ def test_a_move_frigate_cannot_see_is_reported_as_row_deletion(tree, runner):
 
 
 def test_an_orphaned_file_is_reported(tree, runner):
-    stray = tree.hot / "2026-08-29" / "02" / "driveway" / "99.99.mp4"
+    stray = next(tree.hot.rglob("*.mp4")).with_name("99.99.mp4")
     stray.write_bytes(b"not in the database")
 
     result = runner.invoke(cli, [*report_args(tree), "--json"])
@@ -100,15 +100,17 @@ def test_an_orphaned_file_is_reported(tree, runner):
 
 
 def test_a_leftover_part_file_is_counted_separately(tree, runner):
-    part = tree.hot / "2026-08-29" / "02" / "driveway" / f"00.00.mp4{PART_SUFFIX}"
+    segment = next(tree.hot.rglob("*.mp4"))
+    part = segment.with_name(segment.name + PART_SUFFIX)
     part.write_bytes(b"interrupted")
 
     result = runner.invoke(cli, [*report_args(tree), "--json"])
     payload = json.loads(result.stdout)
     recordings = payload["scans"][0]
     assert recordings["stale_partials"] == [str(part)]
-    assert recordings["orphan_files"] == []
-    assert result.exit_code == 0
+    assert recordings["orphan_files"] == [str(part)]
+    assert recordings["files"] == 61
+    assert result.exit_code == 1
 
 
 def test_the_scan_reads_previews_one_level_deep_like_frigate_does(tree):
@@ -124,7 +126,7 @@ def test_the_scan_reads_previews_one_level_deep_like_frigate_does(tree):
 
 def test_the_scan_changes_nothing_on_disk(tree, runner):
     before = sorted(p for p in tree.hot.rglob("*") if p.is_file())
-    stray = tree.hot / "2026-08-29" / "02" / "driveway" / "99.99.mp4"
+    stray = next(tree.hot.rglob("*.mp4")).with_name("99.99.mp4")
     stray.write_bytes(b"orphan")
 
     runner.invoke(cli, report_args(tree))
@@ -138,3 +140,27 @@ def test_the_scan_changes_nothing_on_disk(tree, runner):
 
 def test_the_threshold_matches_frigates_own_constant():
     assert syncscan.SAFETY_THRESHOLD == 0.5
+
+
+def test_previews_sync_does_not_delete_rows_for_missing_files(tree):
+    tree.previews[0]["path"].unlink()
+    open_database(tree.db_path)
+    result = syncscan.scan(Previews, "previews", tree.preview_hot, PathMap())
+    close_database()
+    assert result.orphan_rows == []
+    assert result.would_delete == 0
+
+
+def test_a_missing_scan_root_is_not_reported_as_healthy(tree, runner):
+    result = runner.invoke(
+        cli,
+        [
+            "sync-report",
+            "--db",
+            str(tree.db_path),
+            "--recordings-root",
+            str(tree.hot / "missing"),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "media root is missing" in result.output

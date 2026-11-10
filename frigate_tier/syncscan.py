@@ -1,7 +1,7 @@
 """What Frigate's media sync would delete, worked out without deleting anything.
 
 This mirrors ``sync_recordings`` and ``sync_previews`` in frigate/util/media.py:
-a row whose ``path`` does not exist is deleted from the database, and a file
+recording rows whose ``path`` does not exist are deleted from the database, and a file
 under the media root with no row pointing at it is unlinked. Both halves stop at
 a 50% threshold unless the caller passes ``force``.
 
@@ -12,12 +12,13 @@ the container mapping is wrong.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from peewee import Model
+from peewee import Model, OperationalError
 
-from .mover import PART_SUFFIX
+from .mover import PART_SUFFIX, _busy
 from .safety import PathMap, indent
 
 # frigate/util/media.py: SAFETY_THRESHOLD = 0.5
@@ -69,7 +70,14 @@ class SyncScan:
 
 def _recording_files(root: Path) -> list[Path]:
     # os.walk over the whole recordings root, matching sync_recordings.
-    return [path for path in root.rglob("*") if path.is_file()]
+    def unreadable(exc: OSError) -> None:
+        raise exc
+
+    return [
+        Path(directory) / name
+        for directory, _, names in os.walk(root, onerror=unreadable)
+        for name in names
+    ]
 
 
 def _preview_files(root: Path) -> list[Path]:
@@ -88,23 +96,28 @@ def scan(model: type[Model], media: str, root: Path, path_map: PathMap) -> SyncS
     """Compare every row of ``model`` against every file under ``root``."""
     result = SyncScan(media=media, root=root)
 
-    stored = {row.path for row in model.select(model.path).iterator()}
-    result.rows = len(stored)
-    for db_path in sorted(stored):
-        if not path_map.from_db(db_path).exists():
-            result.orphan_rows.append(db_path)
-
     if not root.is_dir():
-        return result
+        raise OSError(f"media root is missing or not a directory: {root}")
+    try:
+        stored = {row.path for row in model.select(model.path).iterator()}
+    except OperationalError as exc:
+        raise _busy(exc) from exc
+    result.rows = len(stored)
+    # Unlike recordings sync, previews sync only deletes orphan files, not rows.
+    if media == "recordings":
+        for db_path in sorted(stored):
+            if not path_map.from_db(db_path).exists():
+                result.orphan_rows.append(db_path)
 
     for local in _LISTERS[media](root):
         if local.name.endswith(PART_SUFFIX):
             result.partials.append(local)
-            continue
         result.files += 1
         if path_map.to_db(local) not in stored:
             result.orphan_files.append(local)
 
+    result.orphan_files.sort()
+    result.partials.sort()
     return result
 
 
@@ -121,13 +134,14 @@ def render(scans: list[SyncScan]) -> list[str]:
             f"{scan_result.media}: {scan_result.rows} rows, "
             f"{scan_result.files} files under {scan_result.root}"
         )
-        lines.append(
-            _tally(
-                "rows whose file is missing (sync deletes the row):",
-                len(scan_result.orphan_rows),
-                scan_result.row_ratio,
+        if scan_result.media == "recordings":
+            lines.append(
+                _tally(
+                    "rows whose file is missing (sync deletes the row):",
+                    len(scan_result.orphan_rows),
+                    scan_result.row_ratio,
+                )
             )
-        )
         lines.append(
             _tally(
                 "files with no row (sync unlinks the file):",
