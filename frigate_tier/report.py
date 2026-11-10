@@ -112,7 +112,9 @@ def move_summary(report: RelocationReport) -> str:
 
 
 def failure_lines(report: RelocationReport, limit: int = 20) -> list[str]:
-    problems = [r for r in report.results if r.failed or r.status == STATUS_MISSING]
+    problems = [
+        r for r in report.results if r.failed or r.status == STATUS_MISSING or r.detail
+    ]
     lines = [
         f"{r.status}: {r.candidate.db_path} - {r.detail}" for r in problems[:limit]
     ]

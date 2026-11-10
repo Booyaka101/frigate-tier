@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+import stat
 import sys
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -22,6 +25,7 @@ from .db import (
     model_for,
     open_database,
 )
+from .locking import writer_lock
 from .mover import (
     DatabaseBusy,
     RateLimiter,
@@ -81,7 +85,10 @@ def parse_duration(text: str) -> float:
             f"{text!r} is not a duration. Use a number with s, m, h, d or w, "
             "for example 3d or 36h."
         )
-    return float(match.group(1)) * _DURATION_UNITS[match.group(2).lower()]
+    value = float(match.group(1)) * _DURATION_UNITS[match.group(2).lower()]
+    if not math.isfinite(value):
+        raise click.BadParameter("duration must be finite")
+    return value
 
 
 def parse_size(text: str) -> tuple[str, float]:
@@ -97,7 +104,10 @@ def parse_size(text: str) -> tuple[str, float]:
         if unit or not 0 <= value <= 100:
             raise click.BadParameter(f"{text!r} is not a percentage between 0 and 100")
         return "percent", value
-    return "bytes", value * _SIZE_UNITS[unit]
+    size = value * _SIZE_UNITS[unit]
+    if not math.isfinite(size):
+        raise click.BadParameter("size must be finite")
+    return "bytes", size
 
 
 def _size_spec(flag: str, text: str | None) -> tuple[str, float] | None:
@@ -113,6 +123,12 @@ def _bytes_only(flag: str, text: str) -> float:
     kind, value = _size_spec(flag, text)
     if kind != "bytes":
         raise click.BadParameter(f"{flag} takes a size, not a percentage")
+    return value
+
+
+def _tolerance(ctx, param, value):
+    if not math.isfinite(value) or value < 0:
+        raise click.BadParameter("must be finite and nonnegative", ctx=ctx, param=param)
     return value
 
 
@@ -133,9 +149,9 @@ def _fail(message: str) -> NoReturn:
     raise SystemExit(EXIT_FAILURE)
 
 
-def _open(db_path: Path):
+def _open(db_path: Path, *, read_only: bool = False):
     try:
-        return open_database(db_path)
+        return open_database(db_path, read_only=read_only)
     except FrigateDatabaseError as exc:
         _fail(str(exc))
 
@@ -197,7 +213,10 @@ def common_options(func):
                 help="Limit to a camera. Repeatable.",
             ),
             click.option(
-                "--limit", type=int, default=None, help="Stop after this many segments."
+                "--limit",
+                type=click.IntRange(min=1),
+                default=None,
+                help="Stop after this many segments.",
             ),
             click.option(
                 "--db-path-prefix",
@@ -420,10 +439,16 @@ def _relocation(
         else None
     )
 
-    database = _open(db_path)
+    resources = ExitStack()
     payloads: list[dict] = []
     worst = EXIT_OK
     try:
+        if commit:
+            if not db_path.is_file():
+                _open(db_path)  # report an invalid database before creating a lock
+            resources.enter_context(writer_lock(db_path))
+        database = _open(db_path, read_only=not commit)
+        resources.callback(close_database)
         for job in passes:
             code, payload = _one_pass(
                 database,
@@ -458,7 +483,7 @@ def _relocation(
         )
         raise SystemExit(EXIT_FAILURE) from None
     finally:
-        close_database()
+        resources.close()
 
     if as_json:
         document = (
@@ -511,10 +536,9 @@ def _one_pass(
                 err=True,
             )
         available = free_bytes(source_root)
-        candidates = trim_to_free_target(
-            candidates, available, _resolve_size(free_target, source_root)
-        )
-        if not candidates:
+        target = _resolve_size(free_target, source_root)
+        candidates = trim_to_free_target(candidates, available, target)
+        if available >= target:
             note = (
                 f"{human_bytes(available)} already free on {source_root}, "
                 "nothing to move"
@@ -646,11 +670,12 @@ def _print_plan(candidates, as_json: bool, media: str, restore: bool) -> dict:
 )
 @click.option("--cold", required=True, type=click.Path(path_type=Path))
 @click.option("--camera", "cameras", multiple=True)
-@click.option("--limit", type=int, default=None)
+@click.option("--limit", type=click.IntRange(min=1), default=None)
 @click.option("--db-path-prefix", "prefixes", multiple=True, metavar="LOCAL=DATABASE")
 @click.option(
     "--tolerance-mb",
     type=float,
+    callback=_tolerance,
     default=0.0,
     show_default=True,
     help="Allowed difference between the recorded segment_size and the file.",
@@ -659,7 +684,7 @@ def _print_plan(candidates, as_json: bool, media: str, restore: bool) -> dict:
 def verify(db_path, cold, cameras, limit, prefixes, tolerance_mb, as_json):
     """Check every row under the cold root still has its file, at its recorded size."""
     path_map = _path_map(prefixes)
-    _open(db_path)  # binds the models to this database
+    _open(db_path, read_only=True)  # binds the models to this database
     db_root = _db_root(Path(cold), path_map)
 
     checked = 0
@@ -671,12 +696,23 @@ def verify(db_path, cold, cameras, limit, prefixes, tolerance_mb, as_json):
                 checked += 1
                 local = path_map.from_db(row.path)
                 try:
-                    size = local.stat().st_size
+                    info = local.stat()
                 except OSError:
                     problems.append(
                         VerifyProblem(row.path, local, "missing", f"no file at {local}")
                     )
                     continue
+                if not stat.S_ISREG(info.st_mode):
+                    problems.append(
+                        VerifyProblem(
+                            row.path,
+                            local,
+                            "not-a-file",
+                            f"not a regular file: {local}",
+                        )
+                    )
+                    continue
+                size = info.st_size
                 if model is not Recordings or not row.segment_size:
                     continue
                 actual_mb = round(size / (1 << 20), 2)
@@ -761,7 +797,7 @@ def sync_report(db_path, recordings_root, previews_root, prefixes, as_json):
     tiered setup reports nothing on both sides.
     """
     path_map = _path_map(prefixes)
-    _open(db_path)
+    _open(db_path, read_only=True)
     roots = [("recordings", Recordings, Path(recordings_root))]
     if previews_root:
         roots.append(("previews", Previews, Path(previews_root)))
@@ -770,7 +806,7 @@ def sync_report(db_path, recordings_root, previews_root, prefixes, as_json):
         scans = [
             syncscan.scan(model, media, root, path_map) for media, model, root in roots
         ]
-    except DatabaseBusy as exc:
+    except (DatabaseBusy, OSError) as exc:
         _fail(str(exc))
     finally:
         close_database()

@@ -11,6 +11,29 @@ All notable changes to this project are documented here. The format follows
 - Preserve the destination when a move or restore is interrupted after its database
   update commits. Cleanup could previously delete the file the row now points to,
   potentially losing the segment if the source had already been removed.
+- Close the commit-boundary interruption window by retaining verified copies after
+  attempting a database update, including when the commit outcome is uncertain.
+- Resolve aliases when auditing roots and reject segment paths that escape their
+  roots or use symlink destinations or temporary files.
+- Reject nonpositive `--limit` values, overflowing durations/sizes, invalid verify
+  tolerances, and ambiguous path mappings. Preserve `/` when mapping a database root.
+- Refuse per-segment destination mappings that resolve back to a different local
+  file, and avoid claiming a free-space target was met when no eligible rows exist.
+- Report failed source cleanup as an operational failure without deleting the archive.
+- Match Frigate's sync behavior: preview sync does not delete missing-file rows,
+  and recording partial files count as orphan files. Missing or unreadable scan roots
+  no longer silently produce a healthy report.
+- Preserve spaces in Docker preview roots, reject incomplete preview root pairs,
+  and prevent environment argument lists from expanding filesystem globs.
+- Remove fixed-date paths from sync-report tests.
+
+### Added
+
+- True read-only SQLite connections for plans, dry runs, verify and sync-report,
+  preserving the database's journal mode and supporting read-only database access.
+- OS-managed writer exclusion for moves and restores against the same database,
+  with automatic lock release after termination and no lock on inspection commands.
+- Verification rejects directories and other non-regular files in place of segments.
 
 ## [1.1.0] - 2026-09-03
 

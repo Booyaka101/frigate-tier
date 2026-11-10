@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,29 @@ def test_post_commit_failure_preserves_the_committed_destination(
     assert stored == str(destination)
     assert destination.read_bytes() == original
     assert source.exists() is not source_removed
+    assert missing_files(tree.db_path) == []
+
+
+def test_interrupt_at_commit_boundary_preserves_the_destination(tree, monkeypatch):
+    database = open_database(tree.db_path)
+    candidate = _candidates(tree, limit=1)[0]
+    destination = tree.cold / candidate.local_path.relative_to(tree.hot)
+    original = candidate.local_path.read_bytes()
+    atomic = database.atomic
+
+    @contextmanager
+    def interrupt_on_exit():
+        with atomic():
+            yield
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(database, "atomic", interrupt_on_exit)
+    with pytest.raises(KeyboardInterrupt):
+        relocate(database, Recordings, [candidate], tree.hot, tree.cold, PathMap())
+    close_database()
+
+    assert destination.read_bytes() == original
+    assert candidate.local_path.read_bytes() == original
     assert missing_files(tree.db_path) == []
 
 

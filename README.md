@@ -196,7 +196,8 @@ Even without it, a move that plainly would not fit is refused. Both are overrida
 gigabytes across the same link the cameras write over, and this is the knob that keeps it out of
 the way.
 
-`--limit N` stops after N segments, which is the easy way to try a real move on ten files first.
+`--limit N` stops after N segments per media type, which is the easy way to try a real move on
+ten files first. N must be positive; omitting the flag is the only way to request no limit.
 
 ### Choosing which media
 
@@ -278,11 +279,16 @@ the prefix and set `FRIGATE_TIER_I_KNOW=1` instead.
 | `FRIGATE_TIER_SYNC_REPORT`      | `0`                                    |
 | `FRIGATE_TIER_DRY_RUN`          | `0`                                    |
 | `FRIGATE_TIER_I_KNOW`           | `0`                                    |
-| `FRIGATE_TIER_ARGS`             | unset, appended verbatim               |
+| `FRIGATE_TIER_ARGS`             | unset, whitespace-separated CLI tokens |
 
 With `FRIGATE_TIER_INTERVAL=0` the container runs one pass and exits with the worst exit code of
-that pass, which is what you want from a cron or a systemd timer. On the interval loop it stops
-promptly on `SIGTERM`, between segments, never mid-copy.
+that pass, which is what you want from a cron or a systemd timer. `SIGTERM` stops the interval loop
+after the active command returns. Allow enough container stop time for that command to finish;
+an enforced `SIGKILL` uses the crash-recovery behavior described below.
+
+Set both preview roots or neither. Ordinary root variables support spaces; the prefix list and
+`FRIGATE_TIER_ARGS` are whitespace-separated tokens, not shell expressions, and do not support
+quoted spaces. Use explicit container CLI arguments for mappings containing spaces.
 
 Passing arguments to the container skips the loop and runs the CLI once:
 
@@ -299,16 +305,29 @@ docker run --rm -v /path/to/config:/config ghcr.io/booyaka101/frigate-tier:1.1.0
    the source alone.
 3. `os.replace` the part file into place, `fsync` the directory.
 4. `UPDATE ... SET path = ? WHERE id = ? AND path = ?` inside `db.atomic()`. A unique-constraint
-   collision aborts that one segment, logs it, removes the copy and moves on to the next.
+   collision aborts that one segment, logs it, and moves on to the next. Once an update has been
+   attempted, keep the verified copy even if commit success is uncertain. Retrying can reuse it.
 5. Only then unlink the source.
 6. After the run, prune source directories that are now empty, walking up but never past `--hot`.
 
 Because step 4 is the commit point and each segment is its own transaction, an interrupted run
 leaves zero rows pointing at a missing file, and re-running picks up where it stopped.
 
-The database is opened with `PRAGMA journal_mode=WAL` and `busy_timeout=15000`, matching Frigate.
-A database that stays locked past that fails loudly rather than silently skipping rows. frigate-tier
-never creates, alters or migrates a table.
+Committed moves and restores open the database with `PRAGMA journal_mode=WAL` and
+`busy_timeout=15000`, matching Frigate. Plans, dry runs, `verify`, and `sync-report` use SQLite
+read-only mode without changing its journal mode or requiring database write access. For a live
+WAL database on a read-only mount, include its `-wal` and `-shm` sidecars so current recordings
+remain visible. frigate-tier never creates, alters or migrates a table.
+
+Writers take an OS-managed lock on `<database>.frigate-tier.lock`. A second move or restore
+against the same database fails promptly rather than sharing temporary files. Frigate itself and
+read-only checks are not excluded. The lock releases if the writer crashes; leave the sidecar in
+place. All writers must use the same database path, and separate databases must not share a cold
+destination tree. The filesystem hosting the lock must support advisory locking.
+
+Root checks resolve symlinks and dot-dot components. A segment cannot escape its roots or use
+a symlink as its destination or temporary file. If source cleanup fails after a successful commit,
+the archived file is kept, the leftover source is reported, and the command exits non-zero.
 
 ## Not in scope
 
@@ -325,6 +344,9 @@ job, and it keeps working across the move because `cleanup.py` unlinks by stored
   `sync-report` is the one that looks at everything.
 - `sync-report` answers from where it is standing. If it runs on the host and Frigate is in a
   container, get the `--db-path-prefix` right or the answer is about the host, not about Frigate.
+- Recordings sync checks missing rows and orphan files; previews sync only removes orphan files.
+  Use `verify` to find missing preview files. Leftover recording `.part` files are included in the
+  sync report's orphan-file totals because Frigate would delete them too.
 - Nothing here detects that you have pointed Frigate at the wrong mount. It can only refuse the
   layouts it can see are wrong, which is why the container mapping is a refusal and why you should
   confirm playback in the UI after the first move.
@@ -346,12 +368,13 @@ pytest
 ruff check frigate_tier tests
 ```
 
-The suite is 106 tests against real media, no mocks anywhere. `frigate_tier/fixture.py` renders real
+The integration suite uses real media. `frigate_tier/fixture.py` renders real
 mp4 segments with `ffmpeg -f lavfi -i testsrc2`, laid out as `YYYY-MM-DD/HH/<camera>/MM.SS.mp4`,
 plus preview clips, then writes a SQLite database with the mirrored models pointing at them. Every
 segment gets its own hue and marker box, so a mixed-up file shows up as a changed sha256. The tests
 move real files and read the real database back with plain `sqlite3`. ffmpeg has to be on PATH or
-the suite skips.
+the media tests skip. Focused fault-injection tests cover interruptions, permissions, symlinks and
+writer exclusion; POSIX runner tests exercise argument handling with a recording CLI stub.
 
 CI runs the suite on Python 3.11, 3.12 and 3.13, against both peewee 3.17 (Frigate's own pin) and
 the current release.

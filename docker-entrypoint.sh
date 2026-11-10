@@ -2,6 +2,7 @@
 # Loop frigate-tier on an interval. Any arguments passed to the container are
 # handed straight to the CLI instead, so `docker run ... plan --help` works.
 set -eu
+set -f # Environment argument lists are word-split, never pathname-expanded.
 
 if [ "$#" -gt 0 ]; then
     exec frigate-tier "$@"
@@ -24,32 +25,27 @@ if [ -z "$COLD" ]; then
     exit 1
 fi
 
-prefix_args() {
+invoke() {
     for prefix in $PREFIXES; do
-        printf ' --db-path-prefix %s' "$prefix"
+        set -- "$@" --db-path-prefix "$prefix"
     done
-}
-
-optional() {
-    [ -n "$2" ] && printf ' %s %s' "$1" "$2"
-    return 0
+    frigate-tier "$@"
 }
 
 MEDIA="recordings"
-PREVIEW_ROOTS=""
+if { [ -n "$PREVIEW_HOT" ] && [ -z "$PREVIEW_COLD" ]; } ||
+   { [ -z "$PREVIEW_HOT" ] && [ -n "$PREVIEW_COLD" ]; }; then
+    echo "Set both FRIGATE_TIER_PREVIEW_HOT and FRIGATE_TIER_PREVIEW_COLD, or neither." >&2
+    exit 1
+fi
 if [ -n "$PREVIEW_HOT" ] && [ -n "$PREVIEW_COLD" ]; then
     MEDIA="all"
-    PREVIEW_ROOTS="--preview-hot $PREVIEW_HOT --preview-cold $PREVIEW_COLD"
 fi
 
 COMMIT="--commit"
 [ "${FRIGATE_TIER_DRY_RUN:-0}" = "1" ] && COMMIT=""
 ACK=""
 [ "${FRIGATE_TIER_I_KNOW:-0}" = "1" ] && ACK="--i-know"
-
-TUNING="$(optional --until-free "${FRIGATE_TIER_UNTIL_FREE:-}")"
-TUNING="$TUNING$(optional --min-free-on-cold "${FRIGATE_TIER_MIN_FREE_ON_COLD:-}")"
-TUNING="$TUNING$(optional --bandwidth-limit "${FRIGATE_TIER_BANDWIDTH_LIMIT:-}")"
 
 running=1
 status=0
@@ -61,28 +57,38 @@ report() {
 }
 
 pass() {
-    # shellcheck disable=SC2046,SC2086
-    frigate-tier move \
-        --db "$DB" --media "$MEDIA" --hot "$HOT" --cold "$COLD" $PREVIEW_ROOTS \
-        --older-than "$OLDER_THAN" \
-        $(prefix_args) $TUNING $COMMIT $ACK $EXTRA || report $? "move"
+    set -- move --db "$DB" --media "$MEDIA" --hot "$HOT" --cold "$COLD" \
+        --older-than "$OLDER_THAN"
+    if [ "$MEDIA" = "all" ]; then
+        set -- "$@" --preview-hot "$PREVIEW_HOT" --preview-cold "$PREVIEW_COLD"
+    fi
+    if [ -n "${FRIGATE_TIER_UNTIL_FREE:-}" ]; then
+        set -- "$@" --until-free "$FRIGATE_TIER_UNTIL_FREE"
+    fi
+    if [ -n "${FRIGATE_TIER_MIN_FREE_ON_COLD:-}" ]; then
+        set -- "$@" --min-free-on-cold "$FRIGATE_TIER_MIN_FREE_ON_COLD"
+    fi
+    if [ -n "${FRIGATE_TIER_BANDWIDTH_LIMIT:-}" ]; then
+        set -- "$@" --bandwidth-limit "$FRIGATE_TIER_BANDWIDTH_LIMIT"
+    fi
+    # shellcheck disable=SC2086
+    invoke "$@" $COMMIT $ACK $EXTRA || report $? "move"
 
     if [ "${FRIGATE_TIER_VERIFY:-0}" = "1" ]; then
-        # shellcheck disable=SC2046,SC2086
-        frigate-tier verify --db "$DB" --cold "$COLD" $(prefix_args) \
+        invoke verify --db "$DB" --cold "$COLD" \
             || report $? "verify (recordings)"
         if [ -n "$PREVIEW_COLD" ]; then
-            # shellcheck disable=SC2046,SC2086
-            frigate-tier verify --db "$DB" --cold "$PREVIEW_COLD" $(prefix_args) \
+            invoke verify --db "$DB" --cold "$PREVIEW_COLD" \
                 || report $? "verify (previews)"
         fi
     fi
 
     if [ "${FRIGATE_TIER_SYNC_REPORT:-0}" = "1" ]; then
-        # shellcheck disable=SC2046,SC2086
-        frigate-tier sync-report --db "$DB" --recordings-root "$HOT" \
-            $(optional --previews-root "$PREVIEW_HOT") $(prefix_args) \
-            || report $? "sync-report"
+        set -- sync-report --db "$DB" --recordings-root "$HOT"
+        if [ -n "$PREVIEW_HOT" ]; then
+            set -- "$@" --previews-root "$PREVIEW_HOT"
+        fi
+        invoke "$@" || report $? "sync-report"
     fi
 }
 

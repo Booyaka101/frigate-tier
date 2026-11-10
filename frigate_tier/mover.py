@@ -83,7 +83,7 @@ class RelocationReport:
 
     @property
     def failures(self) -> int:
-        return sum(1 for r in self.results if r.failed)
+        return sum(1 for r in self.results if r.failed) + len(self.orphaned_sources)
 
     @property
     def missing(self) -> int:
@@ -247,6 +247,38 @@ def _relocate_one(
     part = destination.with_name(destination.name + PART_SUFFIX)
     copied_here = False
     try:
+        if path_map.from_db(new_db_path).resolve() != destination.resolve():
+            return SegmentResult(
+                candidate,
+                STATUS_OUTSIDE_ROOT,
+                destination=destination,
+                detail="destination mapping does not round-trip; source left in place",
+            )
+        if (
+            ".." in relative.parts
+            or not source.resolve().is_relative_to(source_root.resolve())
+            or not destination.parent.resolve().is_relative_to(dest_root.resolve())
+        ):
+            return SegmentResult(
+                candidate,
+                STATUS_OUTSIDE_ROOT,
+                destination=destination,
+                detail="a segment path escapes its storage root; source left in place",
+            )
+        if (
+            destination.is_symlink()
+            or part.is_symlink()
+            or source.resolve() == destination.resolve()
+        ):
+            return SegmentResult(
+                candidate,
+                STATUS_COLLISION,
+                destination=destination,
+                detail=(
+                    "destination aliases a source or uses a symlink; "
+                    "source left in place"
+                ),
+            )
         if destination.exists():
             if not _same_bytes(source, destination):
                 return SegmentResult(
@@ -284,6 +316,10 @@ def _relocate_one(
         if on_copied is not None:
             on_copied(result)
 
+        # A signal can arrive just after COMMIT but before Python records success.
+        # From here on, keep the verified copy even if the commit outcome is unclear.
+        # A retry can reuse it; deleting it could leave a committed row dangling.
+        copied_here = False
         try:
             with database.atomic():
                 updated = (
@@ -295,8 +331,6 @@ def _relocate_one(
                     .execute()
                 )
         except IntegrityError as exc:
-            if copied_here:
-                _discard(destination)
             return SegmentResult(
                 candidate,
                 STATUS_COLLISION,
@@ -304,13 +338,9 @@ def _relocate_one(
                 detail=f"another row already claims {new_db_path} ({exc})",
             )
         except OperationalError as exc:
-            if copied_here:
-                _discard(destination)
             raise _busy(exc) from exc
 
         if updated != 1:
-            if copied_here:
-                _discard(destination)
             return SegmentResult(
                 candidate,
                 STATUS_ERROR,
@@ -318,8 +348,6 @@ def _relocate_one(
                 detail="row changed underneath us, nothing updated",
             )
 
-        # The database now owns this copy. Later failures must not roll it back.
-        copied_here = False
         report.rows_updated += updated
         report.bytes_moved += candidate.size
 

@@ -108,8 +108,9 @@ def test_a_leftover_part_file_is_counted_separately(tree, runner):
     payload = json.loads(result.stdout)
     recordings = payload["scans"][0]
     assert recordings["stale_partials"] == [str(part)]
-    assert recordings["orphan_files"] == []
-    assert result.exit_code == 0
+    assert recordings["orphan_files"] == [str(part)]
+    assert recordings["files"] == 61
+    assert result.exit_code == 1
 
 
 def test_the_scan_reads_previews_one_level_deep_like_frigate_does(tree):
@@ -139,3 +140,27 @@ def test_the_scan_changes_nothing_on_disk(tree, runner):
 
 def test_the_threshold_matches_frigates_own_constant():
     assert syncscan.SAFETY_THRESHOLD == 0.5
+
+
+def test_previews_sync_does_not_delete_rows_for_missing_files(tree):
+    tree.previews[0]["path"].unlink()
+    open_database(tree.db_path)
+    result = syncscan.scan(Previews, "previews", tree.preview_hot, PathMap())
+    close_database()
+    assert result.orphan_rows == []
+    assert result.would_delete == 0
+
+
+def test_a_missing_scan_root_is_not_reported_as_healthy(tree, runner):
+    result = runner.invoke(
+        cli,
+        [
+            "sync-report",
+            "--db",
+            str(tree.db_path),
+            "--recordings-root",
+            str(tree.hot / "missing"),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "media root is missing" in result.output

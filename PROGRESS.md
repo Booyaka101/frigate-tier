@@ -1,5 +1,25 @@
 # PROGRESS
 
+## Safety review, 2026-11-10
+
+- Work continues on `fix/preserve-committed-destination`, PR #2. No merge or release.
+- Reviewed runtime modules, CLI selection/verification/reporting, root and path
+  mapping safety, Docker runner, CI and both end-to-end scripts. Checked sync
+  semantics against upstream `frigate/util/media.py` on this date.
+- Fixes cover the commit-boundary interruption window, aliases and escaping
+  segment paths, overlapping CLI writers, silent source cleanup failures,
+  invalid numeric limits/tolerances, sync-report parity, and Docker quoting.
+- Enhancement: real SQLite read-only connections for all inspection/dry-run
+  commands. Writer locks use an OS-managed database sidecar, not SQLite locks.
+- Local Windows suite: 143 passed, 11 platform skips before the final mapping
+  regression. Final Linux container suite: 155 passed with no skips.
+  Lint, formatting and whitespace checks passed.
+- Final bounded action: push this reviewed commit and check its CI matrix, package/image builds,
+  real-video round trip and SIGKILL recovery. Do not merge or publish automatically.
+- Documented boundaries: one shared database path per set of writers; no shared
+  cold tree across databases; advisory-lock-capable filesystem; read-only WAL
+  access needs sidecars; environment token lists cannot quote embedded spaces.
+
 **Status: v1.1.0 complete and verified locally. Not published.** The owner ships it.
 
 ## Phase 0: every external claim in the brief was fetched and checked
